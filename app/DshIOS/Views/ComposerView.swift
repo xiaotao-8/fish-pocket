@@ -302,7 +302,7 @@ struct ComposerView: View {
     /// element or behaviour was removed or changed.
     private var composerBase: some View {
         let trigger = activeTrigger
-        VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 8) {
             if let trigger {
                 CandidatePanel(model: model, context: context, hit: trigger, pick: { pick($0, over: trigger) }, showAll: { refocus = true; browsing = trigger })
             }
