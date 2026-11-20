@@ -259,6 +259,48 @@ struct ComposerView: View {
     private var voice: VoiceInput { composer.voice }
 
     var body: some View {
+        composerSheets
+        // A popover has no `onDismiss`. A picker presented before its dismissal ends never shows.
+        .onChange(of: showTray) { _, open in
+            guard !open, sizeClass == .regular else { return }
+            Task {
+                try? await Task.sleep(for: .milliseconds(450))
+                sheetClosed()
+            }
+        }
+        .onChange(of: showTray || showEditor || browsing != nil) { _, open in
+            if open { sheetUp.wrappedValue = true }
+        }
+        .onChange(of: composer.focusRequest) { focused = true }
+        .onChange(of: focused) { _, now in
+            // Anything that brings the keyboard back (a prompt placed, a tray choice) shows the text.
+            if now { voice.mode = false }
+            focusChanged(now)
+        }
+        // A call or the app leaving the foreground ends the hold without a touch-up: throw it away.
+        .onChange(of: scenePhase) { _, phase in if phase != .active { voice.cancel() } }
+        .onDisappear { voice.cancel() }
+        // A picker closing gives the keyboard back when it was up before: typed into
+        // (`/model`, `/file`) or reached from the tray while it was up.
+        .onChange(of: pickerUp) { _, open in
+            if open {
+                refocus = refocus || focused
+            } else {
+                if refocus { focused = true }
+                refocus = false
+            }
+        }
+        // C-99 / C-110 / C-141: catalogs and the preference follow their engine events.
+        .onChange(of: app.revision("commands/change", "agent-preset/selected")) { Task { await context.loadCommands(model) } }
+        .onChange(of: app.revision("permission-presets/catalog-changed")) { Task { await context.loadPermissions(model) } }
+        .onChange(of: app.revision("settings/document-updated")) { Task { await context.loadSettings(model) } }
+    }
+
+    /// The first part of `body`: the bar itself plus the tasks and pickers that feed it.
+    /// Split out because one chain of all of `body` is more than the compiler type-checks
+    /// in the time it allows itself (Xcode 26 gives up on it). Split only — no UI
+    /// element or behaviour was removed or changed.
+    private var composerBase: some View {
         let trigger = activeTrigger
         VStack(alignment: .leading, spacing: 8) {
             if let trigger {
@@ -326,6 +368,12 @@ struct ComposerView: View {
             if !folders.isEmpty { app.showToast(String(localized: "只有桌面端支持添加文件夹，请添加单个文件")) }
             composer.addFiles(urls.filter { !folders.contains($0) })
         }
+    }
+
+    /// The middle part of `body`: the sheets, alert and dialogs that open over the bar.
+    /// Kept separate from `composerBase` for the same type-checking reason.
+    private var composerSheets: some View {
+        composerBase
         .sheet(isPresented: $showModels) { ModelSearchSheet(model: model, context: context) }
         .sheet(isPresented: $voiceSetup) {
             NavigationStack {
@@ -360,40 +408,6 @@ struct ComposerView: View {
             }
         }
         .permissionConfirmation($confirmingPermission, confirm: applyPermission)
-        // A popover has no `onDismiss`. A picker presented before its dismissal ends never shows.
-        .onChange(of: showTray) { _, open in
-            guard !open, sizeClass == .regular else { return }
-            Task {
-                try? await Task.sleep(for: .milliseconds(450))
-                sheetClosed()
-            }
-        }
-        .onChange(of: showTray || showEditor || browsing != nil) { _, open in
-            if open { sheetUp.wrappedValue = true }
-        }
-        .onChange(of: composer.focusRequest) { focused = true }
-        .onChange(of: focused) { _, now in
-            // Anything that brings the keyboard back (a prompt placed, a tray choice) shows the text.
-            if now { voice.mode = false }
-            focusChanged(now)
-        }
-        // A call or the app leaving the foreground ends the hold without a touch-up: throw it away.
-        .onChange(of: scenePhase) { _, phase in if phase != .active { voice.cancel() } }
-        .onDisappear { voice.cancel() }
-        // A picker closing gives the keyboard back when it was up before: typed into
-        // (`/model`, `/file`) or reached from the tray while it was up.
-        .onChange(of: pickerUp) { _, open in
-            if open {
-                refocus = refocus || focused
-            } else {
-                if refocus { focused = true }
-                refocus = false
-            }
-        }
-        // C-99 / C-110 / C-141: catalogs and the preference follow their engine events.
-        .onChange(of: app.revision("commands/change", "agent-preset/selected")) { Task { await context.loadCommands(model) } }
-        .onChange(of: app.revision("permission-presets/catalog-changed")) { Task { await context.loadPermissions(model) } }
-        .onChange(of: app.revision("settings/document-updated")) { Task { await context.loadSettings(model) } }
     }
 
     /// The `/` or `@` token being typed. It needs the keyboard: hiding it folds the panel.
