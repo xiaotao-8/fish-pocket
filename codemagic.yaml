@@ -1,0 +1,70 @@
+# Fish Pocket 参考构建（Codemagic，iOS 模拟器截图用）
+#
+# 只为在模拟器里跑起真 Fish Pocket、用它自己的 smoke 脚本截一圈页面：
+# 不签名、不出包、不改源码。流程照 app/ci_scripts/ci_post_clone.sh 与
+# .github/workflows/ios-build.yml：工具链 → 厂商依赖 → 组装引擎 →
+# 生成工程 → 模拟器构建 → smoke 截图。厂商依赖走 Codemagic 缓存，
+# 冷构建约 20–35 分钟，热缓存约 10–20 分钟。不自动触发，手动跑。
+
+workflows:
+  ios-sim-reference:
+    name: Fish Pocket iOS simulator reference
+    instance_type: mac_mini_m1
+    max_build_duration: 120
+    environment:
+      xcode: latest
+      node: 24
+    cache:
+      cache_paths:
+        - vendor/nodejs-mobile
+        - vendor/python
+        - vendor/libgit2
+        - vendor/ffmpeg
+    scripts:
+      - name: 工具链
+        script: |
+          command -v xcodegen >/dev/null || brew install xcodegen
+          command -v cmake >/dev/null || brew install cmake
+          node --version
+      - name: 厂商依赖（有缓存就跳过）
+        script: |
+          [ -d vendor/nodejs-mobile/rooted ] || scripts/fetch-nodejs-mobile.sh
+          [ -d vendor/python/rooted ] || scripts/fetch-python.sh
+          [ -d vendor/libgit2/Libgit2.xcframework ] || scripts/build-libgit2.sh
+          [ -d vendor/ffmpeg/FFmpeg.xcframework ] || scripts/fetch-ffmpeg.sh
+      - name: 检查 Node 导入
+        script: scripts/check-root-imports.sh
+      - name: 组装引擎
+        script: scripts/build-engine.sh
+      - name: 生成工程
+        script: |
+          cd app
+          xcodegen generate --quiet
+          mkdir -p DshIOS.xcodeproj/project.xcworkspace/xcshareddata/swiftpm
+          cp ci_scripts/Package.resolved DshIOS.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+      - name: 模拟器构建并截图
+        script: |
+          set -e
+          SIM_UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          for rt,devs in d['devices'].items():
+              if 'iOS' not in rt: continue
+              for dev in devs:
+                  if 'iPhone' in dev['name'] and dev.get('isAvailable', True):
+                      print(dev['udid']); raise SystemExit
+          ")
+          echo "SIM=$SIM_UDID"
+          xcrun simctl boot "$SIM_UDID" || true
+          xcrun simctl bootstatus "$SIM_UDID" -b
+          cd app
+          xcodebuild -project DshIOS.xcodeproj -scheme DshIOS \
+            -destination "id=$SIM_UDID" -derivedDataPath build/DerivedData -skipPackagePluginValidation \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build
+          cd ..
+          # smoke 脚本自己装包、按 -dshOpen 逐页启动截图，最后还断言引擎版本
+          # 与插件行；断言失败不该吞掉截图，|| true 保住产物，日志里看 FAIL。
+          SIM_DEVICE="$SIM_UDID" scripts/smoke-sim.sh smoke || true
+          ls -lh smoke/*.png
+    artifacts:
+      - smoke/*.png
