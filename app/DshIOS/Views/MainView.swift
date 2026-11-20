@@ -181,6 +181,38 @@ struct MainView: View {
 
     /// The width's own layout, with the way into the plugin store.
     private var layout: some View {
+        layoutRequests
+        // The Live Activity and the widgets; a cold launch keeps the link until this view is up.
+        .onChange(of: link?.token, initial: true) {
+            guard let request = link else { return }
+            link = nil
+            Task { await follow(request.link) }
+        }
+        .onChange(of: workspaceId) { WidgetSnapshotWriter.shared.refresh() }
+        .onAppear { settledWidth = sizeClass }
+        .onChange(of: sizeClass) { _, size in
+            if scenePhase == .active { settle(size) }
+        }
+        // On the tab bar the Bot pages are its Bot tab. A conversation left pushed under another
+        // tab is not on screen: what finishes there meanwhile is marked unread, and the watch told.
+        .onChange(of: tab) { _, tab in
+            guard usesTabs else { return }
+            botOpen = tab == .bot
+            app.currentSession = shownSession
+        }
+        .onChange(of: botOpen) { _, open in if usesTabs, open { tab = .bot } }
+        // Back to the list (or the archive) on the 会话 tab: no conversation on screen any more.
+        .onChange(of: sessionsPath) { _, path in
+            guard usesTabs else { return }
+            let top = path.last?.session
+            if top != selection { selection = top }
+        }
+    }
+
+    /// The first part of `layout`: the page itself plus the requests that open things over it.
+    /// Split out because one chain of all of `layout` is more than the compiler type-checks
+    /// in the time it allows itself (Xcode 26 gives up on it).
+    private var layoutCore: some View {
         Group {
             if #available(iOS 18.0, *) {
                 tabLayout
@@ -241,6 +273,12 @@ struct MainView: View {
             }
         }
         .sheet(item: $remoteTarget) { RemoteNewSessionSheet(target: $0).sheetNotices() }
+    }
+
+    /// The second part of `layout`: what the remote session and the other pages do while
+    /// this view is up. Kept separate from `layoutCore` for the same type-checking reason.
+    private var layoutRequests: some View {
+        layoutCore
         // Signed out of remote control (or the server ended it): its conversation has nothing to show.
         .onChange(of: app.remote.signedIn) { _, signedIn in
             if !signedIn, RemoteStore.sessionId(of: selection) != nil { selection = nil }
@@ -260,31 +298,6 @@ struct MainView: View {
             sheet = .phoneControl
         }
         .fullScreenCover(isPresented: $webOpen) { WebFallbackView() }
-        // The Live Activity and the widgets; a cold launch keeps the link until this view is up.
-        .onChange(of: link?.token, initial: true) {
-            guard let request = link else { return }
-            link = nil
-            Task { await follow(request.link) }
-        }
-        .onChange(of: workspaceId) { WidgetSnapshotWriter.shared.refresh() }
-        .onAppear { settledWidth = sizeClass }
-        .onChange(of: sizeClass) { _, size in
-            if scenePhase == .active { settle(size) }
-        }
-        // On the tab bar the Bot pages are its Bot tab. A conversation left pushed under another
-        // tab is not on screen: what finishes there meanwhile is marked unread, and the watch told.
-        .onChange(of: tab) { _, tab in
-            guard usesTabs else { return }
-            botOpen = tab == .bot
-            app.currentSession = shownSession
-        }
-        .onChange(of: botOpen) { _, open in if usesTabs, open { tab = .bot } }
-        // Back to the list (or the archive) on the 会话 tab: no conversation on screen any more.
-        .onChange(of: sessionsPath) { _, path in
-            guard usesTabs else { return }
-            let top = path.last?.session
-            if top != selection { selection = top }
-        }
     }
 
     /// The layout with what the window follows: its launch, the page it is on, and the requests
